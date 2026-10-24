@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="description" content="词流 WordFlow · 可导入自有词库的间隔重复背单词应用">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="词流">
+<title>词流 · 背单词</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ============ 首页 ============ -->
+  <section class="view" id="view-home">
+    <header class="home-head">
+      <div>
+        <div class="greet" id="homeGreet">下午好</div>
+        <h1 class="home-title">今天也要背单词</h1>
+      </div>
+      <button class="icon-btn" id="btnTheme" title="切换主题" aria-label="切换主题">◐</button>
+    </header>
+
+    <div class="book-picker">
+      <select id="homeBookSelect" aria-label="选择词库"></select>
+      <span class="picker-hint" id="homeBookMeta"></span>
+    </div>
+
+    <section class="plan-card" id="planCard">
+      <div class="plan-top">
+        <span class="plan-label">今日计划</span>
+        <span class="plan-est" id="planEst">预计 0 分钟</span>
+      </div>
+      <div class="plan-row">
+        <div class="plan-row-head"><span>新学</span><b id="planNewNum">0 / 0</b></div>
+        <div class="bar"><i id="planNewBar" class="bar-new"></i></div>
+      </div>
+      <div class="plan-row">
+        <div class="plan-row-head"><span>复习</span><b id="planRevNum">0 / 0</b></div>
+        <div class="bar"><i id="planRevBar" class="bar-rev"></i></div>
+      </div>
+      <button class="btn btn-primary btn-xl" id="btnStart">开始学习</button>
+      <button class="btn btn-ghost btn-sm" id="btnCram">自由复习（不按计划）</button>
+    </section>
+
+    <section class="stat-strip" id="homeStatStrip"></section>
+
+    <section class="section" id="homeForecastWrap">
+      <div class="section-head"><h2>未来 7 天待复习</h2></div>
+      <div class="mini-chart" id="homeForecast"></div>
+    </section>
+
+    <p class="foot-note">数据保存在本机浏览器，不上传任何服务器。记得在设置里定期导出备份。</p>
+  </section>
+
+  <!-- ============ 词库 ============ -->
+  <section class="view" id="view-books" hidden>
+    <header class="page-head">
+      <h1>词库</h1>
+      <button class="btn btn-primary btn-sm" id="btnNewBook">＋ 导入词库</button>
+    </header>
+    <div id="bookList" class="book-list"></div>
+    <div class="tip-box">
+      <b>支持的导入格式</b>
+      <ul>
+        <li><b>CSV / TSV</b>：可带表头 <code>word,phonetic,meaning,example,tags</code>（也认中文表头 单词/音标/释义/例句/标签）</li>
+        <li><b>纯文本</b>：每行 <code>单词 释义</code> 或 <code>单词　释义</code>（Tab 分隔）</li>
+        <li><b>JSON</b>：对象数组，或字符串数组</li>
+      </ul>
+      没有音标/例句也能用，只填单词+释义即可。
+    </div>
+  </section>
+
+  <!-- ============ 单词列表 ============ -->
+  <section class="view" id="view-words" hidden>
+    <header class="page-head">
+      <button class="icon-btn" id="btnWordsBack" aria-label="返回">‹</button>
+      <h1 id="wordsTitle">单词</h1>
+      <button class="icon-btn" id="btnWordsMenu" aria-label="更多">⋯</button>
+    </header>
+    <div class="filter-row">
+      <input id="wordSearch" class="input" type="search" placeholder="搜索单词或释义" autocomplete="off">
+    </div>
+    <div class="chips" id="wordFilterChips">
+      <button class="chip active" data-filter="all">全部</button>
+      <button class="chip" data-filter="new">未学</button>
+      <button class="chip" data-filter="learning">学习中</button>
+      <button class="chip" data-filter="review">复习中</button>
+      <button class="chip" data-filter="mastered">已掌握</button>
+    </div>
+    <div id="wordList" class="word-list"></div>
+    <button class="btn btn-ghost btn-sm" id="btnWordMore" hidden>显示更多</button>
+  </section>
+
+  <!-- ============ 统计 ============ -->
+  <section class="view" id="view-stats" hidden>
+    <header class="page-head"><h1>统计</h1></header>
+    <div id="statsBody"></div>
+  </section>
+
+  <!-- ============ 设置 ============ -->
+  <section class="view" id="view-settings" hidden>
+    <header class="page-head"><h1>设置</h1></header>
+
+    <section class="setting-group">
+      <div class="setting-group-head">每日计划</div>
+      <label class="setting-row">
+        <div><div class="setting-title">每日新学上限</div><div class="setting-sub">建议 15–30，太多记不牢</div></div>
+        <input class="num-input" type="number" id="setNewPerDay" min="1" max="200" step="1">
+      </label>
+      <label class="setting-row">
+        <div><div class="setting-title">每日复习上限</div><div class="setting-sub">到期词太多时限制单日负担</div></div>
+        <input class="num-input" type="number" id="setReviewPerDay" min="10" max="999" step="10">
+      </label>
+    </section>
+
+    <section class="setting-group">
+      <div class="setting-group-head">发音</div>
+      <label class="setting-row">
+        <div><div class="setting-title">自动发音</div><div class="setting-sub">出现新卡片时朗读单词</div></div>
+        <input type="checkbox" class="switch" id="setAutoSpeak">
+      </label>
+      <label class="setting-row">
+        <div><div class="setting-title">口音</div></div>
+        <select class="select-input" id="setAccent">
+          <option value="en-US">美音 en-US</option>
+          <option value="en-GB">英音 en-GB</option>
+        </select>
+      </label>
+      <label class="setting-row">
+        <div><div class="setting-title">语速</div><div class="setting-sub" id="setRateVal">0.9×</div></div>
+        <input type="range" class="range" id="setRate" min="0.5" max="1.4" step="0.1">
+      </label>
+    </section>
+
+    <section class="setting-group">
+      <div class="setting-group-head">外观</div>
+      <label class="setting-row">
+        <div><div class="setting-title">主题</div></div>
+        <select class="select-input" id="setTheme">
+          <option value="auto">跟随系统</option>
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="setting-group">
+      <div class="setting-group-head">数据</div>
+      <button class="setting-row setting-btn" id="btnExport"><div><div class="setting-title">导出备份</div><div class="setting-sub">全部词库 + 学习进度 + 统计，JSON 文件</div></div><span class="chev">›</span></button>
+      <button class="setting-row setting-btn" id="btnImportBackup"><div><div class="setting-title">导入备份</div><div class="setting-sub">从 JSON 备份恢复（可合并或覆盖）</div></div><span class="chev">›</span></button>
+      <button class="setting-row setting-btn danger" id="btnReset"><div><div class="setting-title">清空全部数据</div><div class="setting-sub">不可恢复，请先导出备份</div></div><span class="chev">›</span></button>
+    </section>
+
+    <p class="foot-note">词流 WordFlow v1.0 · 纯前端 · 离线可用 · 词库与进度只存在你的设备上</p>
+  </section>
+
+  <!-- ============ 底部导航 ============ -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab active" data-view="home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>
+      <span>首页</span>
+    </button>
+    <button class="tab" data-view="books">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v16H4zM13 4h7v16h-7z"/></svg>
+      <span>词库</span>
+    </button>
+    <button class="tab" data-view="stats">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10h4v10zM10 20V4h4v16zM16 20v-7h4v7z"/></svg>
+      <span>统计</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM3 12l-2 1 2 4 2-1a8 8 0 0 0 2 1l.5 2h4l.5-2a8 8 0 0 0 2-1l2 1 2-4-2-1v-2l2-1-2-4-2 1a8 8 0 0 0-2-1L12 2H8l-.5 2a8 8 0 0 0-2 1L3 4 1 8l2 1z"/></svg>
+      <span>设置</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ============ 学习会话 ============ -->
+<div class="study" id="study" hidden>
+  <header class="study-top">
+    <button class="icon-btn" id="studyClose" aria-label="退出学习">✕</button>
+    <div class="study-progress">
+      <div class="bar"><i id="studyBar"></i></div>
+      <span id="studyCount">0 / 0</span>
+    </div>
+    <button class="icon-btn" id="studySpeakToggle" aria-label="发音" title="朗读">🔊</button>
+  </header>
+
+  <div class="study-body">
+    <div class="flashcard" id="flashcard">
+      <div class="fc-inner">
+        <div class="fc-front">
+          <div class="fc-badges">
+            <span class="pill" id="fcKind">新词</span>
+            <span class="pill pill-soft" id="fcTags"></span>
+          </div>
+          <div class="fc-word" id="fcWord">word</div>
+          <div class="fc-phon" id="fcPhon"></div>
+          <button class="speak-btn" id="fcSpeak" aria-label="朗读单词">🔊</button>
+          <div class="fc-hint">轻触卡片 / 按空格 显示释义</div>
+        </div>
+        <div class="fc-back">
+          <div class="fc-badges">
+            <span class="pill" id="fcKind2">新词</span>
+            <span class="pill pill-soft" id="fcTags2"></span>
+          </div>
+          <div class="fc-word fc-word-sm" id="fcWord2">word</div>
+          <div class="fc-phon" id="fcPhon2"></div>
+          <div class="fc-meaning" id="fcMeaning"></div>
+          <div class="fc-example" id="fcExample"></div>
+          <div class="fc-example-cn" id="fcExampleCn"></div>
+          <div class="fc-reps" id="fcReps"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="study-bottom">
+    <button class="btn btn-primary btn-xl" id="btnReveal">显示释义</button>
+    <div class="ratings" id="ratings" hidden>
+      <button class="rate rate-0" data-g="0"><b>忘记</b><span>—</span></button>
+      <button class="rate rate-1" data-g="1"><b>模糊</b><span>—</span></button>
+      <button class="rate rate-2" data-g="2"><b>认识</b><span>—</span></button>
+      <button class="rate rate-3" data-g="3"><b>简单</b><span>—</span></button>
+    </div>
+    <div class="study-tip">1–4 评分 · 空格翻面</div>
+  </footer>
+</div>
+
+<!-- ============ 会话完成 ============ -->
+<div class="study" id="done" hidden>
+  <div class="done-box">
+    <div class="done-emoji" id="doneEmoji">🎉</div>
+    <h2 id="doneTitle">今日任务完成</h2>
+    <p class="done-sub" id="doneSub"></p>
+    <div class="done-grid" id="doneGrid"></div>
+    <button class="btn btn-primary btn-xl" id="doneHome">回到首页</button>
+    <button class="btn btn-ghost btn-sm" id="doneAgain">再学一轮</button>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toast" class="toast" hidden></div>
+<noscript><p style="padding:24px">这个应用需要启用 JavaScript。</p></noscript>
+
+<script src="js/srs.js"></script>
+<script src="js/importer.js"></script>
+<script src="js/store.js"></script>
+<script src="js/demo-data.js"></script>
+<script src="js/wordbanks.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
