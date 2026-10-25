@@ -557,9 +557,27 @@ html[data-theme="dark"] .toast{background:rgba(233,238,245,.95);color:#0b0e14;}
         </select>
       </label>
       <label class="setting-row">
+        <div>
+          <div class="setting-title">音源</div>
+          <div class="setting-sub">词典真人发音 ≈ 有道（英文）/ 百度（中文）</div>
+        </div>
+        <select class="select-input" id="setAudioSrc">
+          <option value="auto">自动（推荐）</option>
+          <option value="online">只用在线发音</option>
+          <option value="tts">只用系统语音</option>
+        </select>
+      </label>
+      <label class="setting-row">
         <div><div class="setting-title">语速</div><div class="setting-sub" id="setRateVal">0.9×</div></div>
         <input type="range" class="range" id="setRate" min="0.5" max="1.4" step="0.1">
       </label>
+      <div class="setting-row">
+        <div>
+          <div class="setting-title">测试发音</div>
+          <div class="setting-sub" id="setVoiceInfo">点右边按钮试听</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" type="button" id="btnTestSpeak">试听</button>
+      </div>
     </section>
 
     <section class="setting-group">
@@ -1272,6 +1290,7 @@ html[data-theme="dark"] .toast{background:rgba(233,238,245,.95);color:#0b0e14;}
     autoSpeak: true,
     accent: 'en-US',
     rate: 0.9,
+    audioSrc: 'auto',
     theme: 'auto',
     showExample: true
   };
@@ -1984,6 +2003,158 @@ window.BUNDLED_BANKS = [
 
 </script>
 <script>
+/* WordFlow 发音音源层
+ *
+ * 系统 TTS（机器音）不好听，所以优先用「词典真人发音」：
+ *   英文 → 有道词典 dictvoice（多数是真人录音，美音 type=2 / 英音 type=1）
+ *   中文 → 有道 dictvoice 的 le=zh 通道（中文 TTS，音色比手机自带的自然）
+ *
+ * 为什么用 <audio src> 直接播放、而不是 fetch 成 blob：
+ *   有道不发 Access-Control-Allow-Origin，浏览器里 fetch 会被 CORS 拦掉，
+ *   但 <audio src> 属于媒体加载，不受 CORS 限制 —— 所以能放，不能缓存成 blob。
+ *   播放过的 URL 会留在浏览器 HTTP 缓存里，第二次起就很快。
+ *
+ * 都失败时返回 null，由 app.js 退回系统 TTS。
+ */
+(function (global) {
+  'use strict';
+
+  function isChinese(text) {
+    return /[\u4e00-\u9fa5]/.test(String(text || ''));
+  }
+
+  /* 生成在线音源地址：纯函数，方便测试
+     · 英文：有道 dictvoice（type=1 英音 / 2 美音），真人录音
+     · 中文：有道 dictvoice 的 le=zh 通道（走中文 TTS）
+       注意别用 fanyi.baidu.com/gettts —— 它带 Referer 时返回空 html，浏览器里必然失败 */
+  function sourceUrl(text, lang) {
+    var w = String(text || '').trim();
+    if (!w) return '';
+    if (isChinese(w)) {
+      return 'https://dict.youdao.com/dictvoice?le=zh&audio=' + encodeURIComponent(w);
+    }
+    var type = (lang === 'en-GB') ? 1 : 2;   /* 1 = 英音，2 = 美音 */
+    return 'https://dict.youdao.com/dictvoice?type=' + type + '&audio=' + encodeURIComponent(w);
+  }
+
+  var current = null;              /* 当前在播的 Audio，避免两句话叠在一起 */
+  var lastMode = '';
+  var lastLang = '';
+  var failures = Object.create(null);   /* url -> 时间戳：失败过的地址 1 分钟内不再重试 */
+  var FAIL_TTL = 60000;
+  var warm = [];                   /* 预热的 Audio 对象，最多留 6 个 */
+
+  function stop() {
+    if (current) {
+      try { current.pause(); current.currentTime = 0; } catch (e) { /* ignore */ }
+      current = null;
+    }
+  }
+
+  function play(url) {
+    stop();
+    return new Promise(function (resolve) {
+      var a;
+      try {
+        a = new global.Audio();
+      } catch (e) {
+        resolve(false);
+        return;
+      }
+      current = a;
+      var settled = false;
+      var finish = function (ok) {
+        if (settled) return;
+        settled = true;
+        a.onended = null;
+        a.onerror = null;
+        a.oncanplay = null;
+        if (!ok && current === a) current = null;
+        resolve(ok);
+      };
+      a.onended = function () { if (current === a) current = null; };
+      a.onerror = function () { finish(false); };
+      /* 能播就算成功（不等放完），也不阻塞 UI */
+      a.oncanplay = function () { finish(true); };
+      a.preload = 'auto';
+      a.src = url;
+      var p = null;
+      try { p = a.play(); } catch (e) { p = null; }
+      if (p && p.then) {
+        p.then(function () { finish(true); }, function () {
+          /* 自动播放被拦或解码失败：再等一下 oncanplay，不行就判失败 */
+          setTimeout(function () { finish(false); }, 1200);
+        });
+      } else {
+        setTimeout(function () { finish(true); }, 1200);
+      }
+      /* 兜底：3 秒还没判定就当失败，退回 TTS */
+      setTimeout(function () { finish(false); }, 3000);
+    });
+  }
+
+  /* 主入口：返回 'online' 或 null（null = 该退回系统 TTS） */
+  function pronounce(text, lang) {
+    var url = sourceUrl(text, lang);
+    if (!url) return Promise.resolve(null);
+    var failedAt = failures[url];
+    if (failedAt && Date.now() - failedAt < FAIL_TTL) return Promise.resolve(null);
+    lastLang = String(lang || '');
+    return play(url).then(function (ok) {
+      if (!ok) {
+        failures[url] = Date.now();
+        lastMode = '';
+        return null;
+      }
+      lastMode = 'online';
+      return 'online';
+    }).catch(function () {
+      failures[url] = Date.now();
+      return null;
+    });
+  }
+
+  /* 预取：卡片一出现就悄悄加载音频，点发音时几乎立刻出声 */
+  function prefetch(text, lang) {
+    var url = sourceUrl(text, lang);
+    if (!url || !global.Audio) return;
+    if (failures[url]) return;
+    try {
+      var a = new global.Audio();
+      a.preload = 'auto';
+      a.src = url;
+      warm.push(a);
+      if (warm.length > 6) {
+        var old = warm.shift();
+        try { old.src = ''; } catch (e) { /* ignore */ }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function stats() {
+    return { mode: lastMode, lang: lastLang, failures: Object.keys(failures).length };
+  }
+
+  function clearCache() {
+    failures = Object.create(null);
+    lastMode = '';
+  }
+
+  var API = {
+    sourceUrl: sourceUrl,
+    isChinese: isChinese,
+    pronounce: pronounce,
+    prefetch: prefetch,
+    stop: stop,
+    stats: stats,
+    clearCache: clearCache
+  };
+
+  global.WFAudio = API;
+  if (typeof module === 'object' && module.exports) module.exports = API;
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+<script>
 /* ============================================================
  * 词流 WordFlow — 界面与学习流程
  * 依赖：SRS / Importer / Store / DEMO_WORDS
@@ -2107,26 +2278,160 @@ window.BUNDLED_BANKS = [
    * 发音
    * ============================================================ */
   var voices = [];
+  var speakWarned = false;
+  var lastSpeak = { lang: '', err: '', mode: '' };
   function loadVoices() {
-    if (!('speechSynthesis' in window)) return;
-    voices = window.speechSynthesis.getVoices() || [];
+    if (!('speechSynthesis' in window)) return [];
+    try { voices = window.speechSynthesis.getVoices() || []; } catch (e) { voices = []; }
+    return voices;
   }
-  function speak(text) {
-    if (!text || !('speechSynthesis' in window)) return;
+  /* 返回某语言可用语音数量（设置页用来显示“检测到几个语音”） */
+  function voiceCount(lang) {
+    var pre = String(lang || 'en').slice(0, 2).toLowerCase();
+    return loadVoices().filter(function (v) {
+      return v.lang && v.lang.toLowerCase().indexOf(pre) === 0;
+    }).length;
+  }
+  function pickVoice(lang) {
+    var list = loadVoices();
+    if (!list.length) return null;
+    var want = String(lang).replace('_', '-').toLowerCase();
+    var pre = want.slice(0, 2);
+    var norm = function (v) { return String(v.lang || '').replace('_', '-').toLowerCase(); };
+    var exact = list.filter(function (v) { return norm(v) === want; });
+    var loose = list.filter(function (v) { return norm(v).indexOf(pre) === 0; });
+    /* 优先本地语音（localService），联网语音在断网时不出声 */
+    var local = loose.filter(function (v) { return v.localService; });
+    return exact.filter(function (v) { return v.localService; })[0] || exact[0] || local[0] || loose[0] || null;
+  }
+  /* 发音总入口：先试在线真人音源（有道/百度），失败才退回系统 TTS */
+  function speak(text, opts) {
+    if (!text) return;
+    var quiet = !!(opts && opts.quiet);
+    var s = Store.data.settings;
+    var mode = s.audioSrc || 'auto';
+    var lang = s.accent || 'en-US';
+    /* 含汉字的卡（如化学术语）改用中文音源，英文语音会把汉字读成乱码 */
+    if (/[\u4e00-\u9fa5]/.test(text)) lang = 'zh-CN';
+    if (mode !== 'tts' && window.WFAudio) {
+      window.WFAudio.pronounce(text, lang).then(function (src) {
+        if (src) {
+          lastSpeak.mode = src;
+          lastSpeak.lang = lang;
+          lastSpeak.err = '';
+          return;
+        }
+        if (mode === 'online') {
+          lastSpeak.mode = 'failed';
+          if (!quiet && !speakWarned) {
+            speakWarned = true;
+            toast('在线发音失败了：检查网络，或到设置里把音源改成「系统语音」');
+          }
+          return;
+        }
+        ttsSpeak(text, lang, quiet);   /* auto：在线不行就用系统语音 */
+      });
+      return;
+    }
+    ttsSpeak(text, lang, quiet);
+  }
+
+  /* 系统 TTS：兜底方案（也是「只用系统语音」时的唯一方案） */
+  function ttsSpeak(text, lang, quiet) {
+    if (!text || !('speechSynthesis' in window)) {
+      if (!quiet) toast('这个浏览器不支持朗读');
+      return;
+    }
+    var synth = window.speechSynthesis;
+    var accent = lang;
+    var phrase = text;
+    function run() {
+      try {
+        var u = new SpeechSynthesisUtterance(phrase);
+        u.lang = lang;
+        u.rate = Number(Store.data.settings.rate) || 0.9;
+        u.pitch = 1;
+        u.volume = 1;
+        var v = pickVoice(lang);
+        if (v) u.voice = v;
+        u.onerror = function (ev) {
+          var err = (ev && ev.error) || '';
+          if (err === 'canceled' || err === 'interrupted') return; /* 我们自己 cancel 的，忽略 */
+          lastSpeak.err = err;
+          if (speakWarned || quiet) return;
+          speakWarned = true;
+          toast(err === 'language-unavailable' || err === 'voice-unavailable'
+            ? '这台手机没有 ' + lang + ' 语音包，去系统设置里装一个中文/英文 TTS 再试'
+            : '朗读失败（' + (err || '未知原因') + '），可能是系统静音或缺少语音包');
+        };
+        synth.speak(u);
+        lastSpeak.lang = lang;
+        lastSpeak.err = '';
+        lastSpeak.mode = 'tts';
+        return u;
+      } catch (e) {
+        lastSpeak.err = e.message || 'throw';
+        if (!speakWarned && !quiet) { speakWarned = true; toast('朗读失败：' + e.message); }
+        return null;
+      }
+    }
+    function idle() { return !synth.speaking && !synth.pending && !synth.paused; }
+    try { synth.cancel(); } catch (e) { /* ignore */ }
+    try { if (synth.paused) synth.resume(); } catch (e) { /* ignore */ }
+    /* 必须在本轮流同步调用：iOS 要求在用户手势的同一任务里 speak，setTimeout 会丢掉手势 */
+    run();
+    /* 安卓上 cancel() 刚结束就 speak() 偶尔被吞掉：没进入队列就重试一次 */
+    setTimeout(function () {
+      if (!idle()) return;
+      try { synth.cancel(); } catch (e) { /* ignore */ }
+      run();
+    }, 320);
+    /* 系统 TTS 没起来（没语音包 / 引擎缺失）→ 退回在线词典发音 */
+    setTimeout(function () {
+      if (!idle()) return;
+      playOnline(phrase, lang, quiet);
+    }, 700);
+    /* 兜底：1.8 秒后系统语音和在线发音都没成功 → 说明原因，只提示一次 */
+    setTimeout(function () {
+      if (speakWarned || quiet) return;
+      if (idle() && lastSpeak.mode !== 'online') {
+        speakWarned = true;
+        toast(voiceCount(lang) === 0
+          ? '这台手机没有 ' + lang + ' 语音包：装个「文字转语音」引擎，或连网用在线发音'
+          : '没听到声音？看看手机静音/媒体音量，或在「设置 → 发音」点试听');
+      }
+    }, 1800);
+  }
+  /* 在线发音兜底：英文用有道词典，中文用百度翻译 TTS。
+     界面里的字要先过一遍，注意这会把单词发到对方服务器。 */
+  function onlineUrl(text, lang) {
+    if (/[\u4e00-\u9fa5]/.test(text)) {
+      return 'https://fanyi.baidu.com/gettts?lan=zh&spd=3&source=web&text=' + encodeURIComponent(text);
+    }
+    var type = (lang === 'en-GB') ? 1 : 2;
+    return 'https://dict.youdao.com/dictvoice?type=' + type + '&audio=' + encodeURIComponent(text);
+  }
+  function playOnline(text, lang, quiet) {
+    var url = onlineUrl(text, lang);
+    lastSpeak.mode = 'online';
     try {
-      window.speechSynthesis.cancel();
-      var u = new SpeechSynthesisUtterance(text);
-      var accent = Store.data.settings.accent || 'en-US';
-      /* 含汉字的卡（如化学术语）改用中文语音，英文语音会把汉字读成乱码 */
-      if (/[\u4e00-\u9fa5]/.test(text)) accent = 'zh-CN';
-      u.lang = accent;
-      u.rate = Number(Store.data.settings.rate) || 0.9;
-      var exact = voices.filter(function (v) { return v.lang === accent; });
-      var loose = voices.filter(function (v) { return v.lang && v.lang.toLowerCase().indexOf(accent.slice(0, 2).toLowerCase()) === 0; });
-      var v = exact[0] || loose[0];
-      if (v) u.voice = v;
-      window.speechSynthesis.speak(u);
-    } catch (e) { /* 忽略：部分浏览器禁止自动朗读 */ }
+      var a = new Audio(url);
+      a.volume = 1;
+      var p = a.play();
+      if (p && p.catch) {
+        p.catch(function () {
+          lastSpeak.mode = 'failed';
+          if (!quiet && !speakWarned) {
+            speakWarned = true;
+            toast('系统语音和在线发音都没成功：先点一下页面再试，或检查网络');
+          }
+        });
+      }
+      return a;
+    } catch (e) {
+      lastSpeak.mode = 'failed';
+      return null;
+    }
   }
 
   /* ============================================================
@@ -2504,9 +2809,12 @@ window.BUNDLED_BANKS = [
     $('#setReviewPerDay').value = s.reviewPerDay;
     $('#setAutoSpeak').checked = !!s.autoSpeak;
     $('#setAccent').value = s.accent;
+    $('#setAudioSrc').value = s.audioSrc || 'auto';
     $('#setRate').value = s.rate;
     $('#setRateVal').textContent = Number(s.rate).toFixed(1) + '×';
     $('#setTheme').value = s.theme || 'auto';
+    var n = voiceCount(s.accent);
+    $('#setVoiceInfo').textContent = n > 0 ? ('检测到 ' + n + ' 个可用语音') : '先点试听，让系统加载语音';
   }
 
   function bindSettings() {
@@ -2524,12 +2832,30 @@ window.BUNDLED_BANKS = [
     });
     $('#setAutoSpeak').addEventListener('change', function (e) { set('autoSpeak', e.target.checked); });
     $('#setAccent').addEventListener('change', function (e) { set('accent', e.target.value); speak('Hello'); });
+    $('#setAudioSrc').addEventListener('change', function (e) { set('audioSrc', e.target.value); speak('Vocabulary'); });
     $('#setRate').addEventListener('input', function (e) {
       var v = Number(e.target.value);
       $('#setRateVal').textContent = v.toFixed(1) + '×';
       set('rate', v);
     });
     $('#setRate').addEventListener('change', function () { speak('Vocabulary'); });
+    $('#btnTestSpeak').addEventListener('click', function () {
+      speak('Vocabulary');
+      /* 900ms 后看真实状态：在线真人 / 缓存 / 系统语音 / 都失败，直接写在设置页里 */
+      setTimeout(function () {
+        var n = voiceCount(Store.data.settings.accent);
+        var s = window.speechSynthesis;
+        var txt;
+        if (lastSpeak.mode === 'online') txt = '真人发音 · 已开始播放（有道词典音源）';
+        else if (lastSpeak.mode === 'cache') txt = '真人发音 · 已开始播放';
+        else if (lastSpeak.mode === 'tts' && s && (s.speaking || s.pending)) txt = '系统语音 · 正在朗读';
+        else if (lastSpeak.mode === 'tts') txt = '系统语音 · 已请求（没听到就调媒体音量）';
+        else if (lastSpeak.mode === 'failed') txt = '在线发音失败 · 检查网络或改用系统语音';
+        else txt = '语音 ' + n + ' 个 · 等待朗读';
+        if (lastSpeak.err) txt += ' · 错误 ' + lastSpeak.err;
+        $('#setVoiceInfo').textContent = txt;
+      }, 900);
+    });
     $('#setTheme').addEventListener('change', function (e) {
       set('theme', e.target.value); applyTheme();
     });
@@ -2932,7 +3258,13 @@ window.BUNDLED_BANKS = [
     el.classList.add('in');
 
     if (Store.data.settings.autoSpeak && (cur.item.kind === 'new' || cur.item.re)) {
-      setTimeout(function () { speak(c.word); }, 120);
+      /* quiet：自动发音可能是被浏览器拦掉的（iOS 要求用户手势），不弹提示 */
+      setTimeout(function () { speak(c.word, { quiet: true }); }, 120);
+    }
+    /* 后台把这张卡的发音抓进缓存：第一次点发音就不用等网络 */
+    if (window.WFAudio) {
+      var alang = /[\u4e00-\u9fa5]/.test(c.word) ? 'zh-CN' : (Store.data.settings.accent || 'en-US');
+      window.WFAudio.prefetch(c.word, alang);
     }
   }
 

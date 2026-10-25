@@ -147,18 +147,46 @@
     var local = loose.filter(function (v) { return v.localService; });
     return exact.filter(function (v) { return v.localService; })[0] || exact[0] || local[0] || loose[0] || null;
   }
+  /* 发音总入口：先试在线真人音源（有道/百度），失败才退回系统 TTS */
   function speak(text, opts) {
     if (!text) return;
     var quiet = !!(opts && opts.quiet);
-    if (!('speechSynthesis' in window)) {
+    var s = Store.data.settings;
+    var mode = s.audioSrc || 'auto';
+    var lang = s.accent || 'en-US';
+    /* 含汉字的卡（如化学术语）改用中文音源，英文语音会把汉字读成乱码 */
+    if (/[\u4e00-\u9fa5]/.test(text)) lang = 'zh-CN';
+    if (mode !== 'tts' && window.WFAudio) {
+      window.WFAudio.pronounce(text, lang).then(function (src) {
+        if (src) {
+          lastSpeak.mode = src;
+          lastSpeak.lang = lang;
+          lastSpeak.err = '';
+          return;
+        }
+        if (mode === 'online') {
+          lastSpeak.mode = 'failed';
+          if (!quiet && !speakWarned) {
+            speakWarned = true;
+            toast('在线发音失败了：检查网络，或到设置里把音源改成「系统语音」');
+          }
+          return;
+        }
+        ttsSpeak(text, lang, quiet);   /* auto：在线不行就用系统语音 */
+      });
+      return;
+    }
+    ttsSpeak(text, lang, quiet);
+  }
+
+  /* 系统 TTS：兜底方案（也是「只用系统语音」时的唯一方案） */
+  function ttsSpeak(text, lang, quiet) {
+    if (!text || !('speechSynthesis' in window)) {
       if (!quiet) toast('这个浏览器不支持朗读');
       return;
     }
     var synth = window.speechSynthesis;
-    var accent = Store.data.settings.accent || 'en-US';
-    /* 含汉字的卡（如化学术语）改用中文语音，英文语音会把汉字读成乱码 */
-    if (/[\u4e00-\u9fa5]/.test(text)) accent = 'zh-CN';
-    var lang = accent;
+    var accent = lang;
     var phrase = text;
     function run() {
       try {
@@ -624,6 +652,7 @@
     $('#setReviewPerDay').value = s.reviewPerDay;
     $('#setAutoSpeak').checked = !!s.autoSpeak;
     $('#setAccent').value = s.accent;
+    $('#setAudioSrc').value = s.audioSrc || 'auto';
     $('#setRate').value = s.rate;
     $('#setRateVal').textContent = Number(s.rate).toFixed(1) + '×';
     $('#setTheme').value = s.theme || 'auto';
@@ -646,6 +675,7 @@
     });
     $('#setAutoSpeak').addEventListener('change', function (e) { set('autoSpeak', e.target.checked); });
     $('#setAccent').addEventListener('change', function (e) { set('accent', e.target.value); speak('Hello'); });
+    $('#setAudioSrc').addEventListener('change', function (e) { set('audioSrc', e.target.value); speak('Vocabulary'); });
     $('#setRate').addEventListener('input', function (e) {
       var v = Number(e.target.value);
       $('#setRateVal').textContent = v.toFixed(1) + '×';
@@ -654,15 +684,16 @@
     $('#setRate').addEventListener('change', function () { speak('Vocabulary'); });
     $('#btnTestSpeak').addEventListener('click', function () {
       speak('Vocabulary');
-      /* 900ms 后看真实状态：系统语音 / 在线发音 / 都没成功，直接写在设置页里 */
+      /* 900ms 后看真实状态：在线真人 / 缓存 / 系统语音 / 都失败，直接写在设置页里 */
       setTimeout(function () {
         var n = voiceCount(Store.data.settings.accent);
         var s = window.speechSynthesis;
         var txt;
-        if (lastSpeak.mode === 'tts' && s && (s.speaking || s.pending)) txt = '系统语音 · 正在朗读';
+        if (lastSpeak.mode === 'online') txt = '真人发音 · 已开始播放（有道词典音源）';
+        else if (lastSpeak.mode === 'cache') txt = '真人发音 · 已开始播放';
+        else if (lastSpeak.mode === 'tts' && s && (s.speaking || s.pending)) txt = '系统语音 · 正在朗读';
         else if (lastSpeak.mode === 'tts') txt = '系统语音 · 已请求（没听到就调媒体音量）';
-        else if (lastSpeak.mode === 'online') txt = '系统语音不可用 · 改用在线发音';
-        else if (lastSpeak.mode === 'failed') txt = '系统语音与在线发音都失败 · 检查网络';
+        else if (lastSpeak.mode === 'failed') txt = '在线发音失败 · 检查网络或改用系统语音';
         else txt = '语音 ' + n + ' 个 · 等待朗读';
         if (lastSpeak.err) txt += ' · 错误 ' + lastSpeak.err;
         $('#setVoiceInfo').textContent = txt;
@@ -1072,6 +1103,11 @@
     if (Store.data.settings.autoSpeak && (cur.item.kind === 'new' || cur.item.re)) {
       /* quiet：自动发音可能是被浏览器拦掉的（iOS 要求用户手势），不弹提示 */
       setTimeout(function () { speak(c.word, { quiet: true }); }, 120);
+    }
+    /* 后台把这张卡的发音抓进缓存：第一次点发音就不用等网络 */
+    if (window.WFAudio) {
+      var alang = /[\u4e00-\u9fa5]/.test(c.word) ? 'zh-CN' : (Store.data.settings.accent || 'en-US');
+      window.WFAudio.prefetch(c.word, alang);
     }
   }
 

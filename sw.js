@@ -1,5 +1,5 @@
 /* WordFlow Service Worker —— 离线可用的 app shell 缓存 */
-const VERSION = 'wordflow-v5';
+const VERSION = 'wordflow-v9';
 const SHELL = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ const SHELL = [
   './js/store.js',
   './js/demo-data.js',
   './js/wordbanks.js',
+  './js/audio.js',
   './js/app.js',
   './icons/icon-192.png',
   './icons/icon-512.png',

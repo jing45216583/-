@@ -135,6 +135,17 @@
         </select>
       </label>
       <label class="setting-row">
+        <div>
+          <div class="setting-title">音源</div>
+          <div class="setting-sub">词典真人发音 ≈ 有道（英文）/ 百度（中文）</div>
+        </div>
+        <select class="select-input" id="setAudioSrc">
+          <option value="auto">自动（推荐）</option>
+          <option value="online">只用在线发音</option>
+          <option value="tts">只用系统语音</option>
+        </select>
+      </label>
+      <label class="setting-row">
         <div><div class="setting-title">语速</div><div class="setting-sub" id="setRateVal">0.9×</div></div>
         <input type="range" class="range" id="setRate" min="0.5" max="1.4" step="0.1">
       </label>
@@ -263,6 +274,7 @@
 <script src="js/store.js"></script>
 <script src="js/demo-data.js"></script>
 <script src="js/wordbanks.js"></script>
+<script src="js/audio.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

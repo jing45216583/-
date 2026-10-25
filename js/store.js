@@ -14,6 +14,7 @@
     autoSpeak: true,
     accent: 'en-US',
     rate: 0.9,
+    audioSrc: 'auto',
     theme: 'auto',
     showExample: true
   };
