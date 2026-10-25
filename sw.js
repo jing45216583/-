@@ -1,5 +1,5 @@
 /* WordFlow Service Worker —— 离线可用的 app shell 缓存 */
-const VERSION = 'wordflow-v4';
+const VERSION = 'wordflow-v5';
 const SHELL = [
   './',
   './index.html',

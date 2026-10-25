@@ -121,26 +121,79 @@
    * 发音
    * ============================================================ */
   var voices = [];
+  var speakWarned = false;
   function loadVoices() {
-    if (!('speechSynthesis' in window)) return;
-    voices = window.speechSynthesis.getVoices() || [];
+    if (!('speechSynthesis' in window)) return [];
+    try { voices = window.speechSynthesis.getVoices() || []; } catch (e) { voices = []; }
+    return voices;
   }
-  function speak(text) {
-    if (!text || !('speechSynthesis' in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      var u = new SpeechSynthesisUtterance(text);
-      var accent = Store.data.settings.accent || 'en-US';
-      /* 含汉字的卡（如化学术语）改用中文语音，英文语音会把汉字读成乱码 */
-      if (/[\u4e00-\u9fa5]/.test(text)) accent = 'zh-CN';
-      u.lang = accent;
-      u.rate = Number(Store.data.settings.rate) || 0.9;
-      var exact = voices.filter(function (v) { return v.lang === accent; });
-      var loose = voices.filter(function (v) { return v.lang && v.lang.toLowerCase().indexOf(accent.slice(0, 2).toLowerCase()) === 0; });
-      var v = exact[0] || loose[0];
-      if (v) u.voice = v;
-      window.speechSynthesis.speak(u);
-    } catch (e) { /* 忽略：部分浏览器禁止自动朗读 */ }
+  /* 返回某语言可用语音数量（设置页用来显示“检测到几个语音”） */
+  function voiceCount(lang) {
+    var pre = String(lang || 'en').slice(0, 2).toLowerCase();
+    return loadVoices().filter(function (v) {
+      return v.lang && v.lang.toLowerCase().indexOf(pre) === 0;
+    }).length;
+  }
+  function pickVoice(lang) {
+    var list = loadVoices();
+    if (!list.length) return null;
+    var want = String(lang).replace('_', '-').toLowerCase();
+    var pre = want.slice(0, 2);
+    var norm = function (v) { return String(v.lang || '').replace('_', '-').toLowerCase(); };
+    var exact = list.filter(function (v) { return norm(v) === want; });
+    var loose = list.filter(function (v) { return norm(v).indexOf(pre) === 0; });
+    /* 优先本地语音（localService），联网语音在断网时不出声 */
+    var local = loose.filter(function (v) { return v.localService; });
+    return exact.filter(function (v) { return v.localService; })[0] || exact[0] || local[0] || loose[0] || null;
+  }
+  function speak(text, opts) {
+    if (!text) return;
+    var quiet = !!(opts && opts.quiet);
+    if (!('speechSynthesis' in window)) {
+      if (!quiet) toast('这个浏览器不支持朗读');
+      return;
+    }
+    var synth = window.speechSynthesis;
+    var accent = Store.data.settings.accent || 'en-US';
+    /* 含汉字的卡（如化学术语）改用中文语音，英文语音会把汉字读成乱码 */
+    if (/[\u4e00-\u9fa5]/.test(text)) accent = 'zh-CN';
+    var lang = accent;
+    var phrase = text;
+    function run() {
+      try {
+        var u = new SpeechSynthesisUtterance(phrase);
+        u.lang = lang;
+        u.rate = Number(Store.data.settings.rate) || 0.9;
+        u.pitch = 1;
+        u.volume = 1;
+        var v = pickVoice(lang);
+        if (v) u.voice = v;
+        u.onerror = function (ev) {
+          var err = (ev && ev.error) || '';
+          if (err === 'canceled' || err === 'interrupted') return; /* 我们自己 cancel 的，忽略 */
+          if (speakWarned || quiet) return;
+          speakWarned = true;
+          toast(err === 'language-unavailable' || err === 'voice-unavailable'
+            ? '这台手机没有 ' + lang + ' 语音包，去系统设置里装一个中文/英文 TTS 再试'
+            : '朗读失败（' + (err || '未知原因') + '），可能是系统静音或缺少语音包');
+        };
+        synth.speak(u);
+        /* 兜底：既没在念也没排队 → 大概率静音 / 无语音包，只提示一次 */
+        setTimeout(function () {
+          if (speakWarned || quiet) return;
+          if (!synth.speaking && !synth.pending && !synth.paused) {
+            speakWarned = true;
+            toast('没听到声音？检查手机侧边静音开关，或到「设置 → 发音」点试听换个语音');
+          }
+        }, 1000);
+      } catch (e) {
+        if (!speakWarned && !quiet) { speakWarned = true; toast('朗读失败：' + e.message); }
+      }
+    }
+    try { synth.cancel(); } catch (e) { /* ignore */ }
+    try { if (synth.paused) synth.resume(); } catch (e) { /* ignore */ }
+    /* 部分 Android/Chrome 上 cancel() 后立刻 speak() 会被吞掉，隔一帧再放 */
+    setTimeout(run, 60);
   }
 
   /* ============================================================
@@ -521,6 +574,8 @@
     $('#setRate').value = s.rate;
     $('#setRateVal').textContent = Number(s.rate).toFixed(1) + '×';
     $('#setTheme').value = s.theme || 'auto';
+    var n = voiceCount(s.accent);
+    $('#setVoiceInfo').textContent = n > 0 ? ('检测到 ' + n + ' 个可用语音') : '先点试听，让系统加载语音';
   }
 
   function bindSettings() {
@@ -544,6 +599,13 @@
       set('rate', v);
     });
     $('#setRate').addEventListener('change', function () { speak('Vocabulary'); });
+    $('#btnTestSpeak').addEventListener('click', function () {
+      speak('Vocabulary');
+      setTimeout(function () {
+        var n = voiceCount(Store.data.settings.accent);
+        $('#setVoiceInfo').textContent = n > 0 ? ('检测到 ' + n + ' 个可用语音') : '系统没提供语音包（安卓可在「设置→系统→语言与输入→文字转语音」里装）';
+      }, 400);
+    });
     $('#setTheme').addEventListener('change', function (e) {
       set('theme', e.target.value); applyTheme();
     });
@@ -946,7 +1008,8 @@
     el.classList.add('in');
 
     if (Store.data.settings.autoSpeak && (cur.item.kind === 'new' || cur.item.re)) {
-      setTimeout(function () { speak(c.word); }, 120);
+      /* quiet：自动发音可能是被浏览器拦掉的（iOS 要求用户手势），不弹提示 */
+      setTimeout(function () { speak(c.word, { quiet: true }); }, 120);
     }
   }
 
