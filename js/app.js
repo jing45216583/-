@@ -122,6 +122,7 @@
    * ============================================================ */
   var voices = [];
   var speakWarned = false;
+  var lastSpeak = { lang: '', err: '', mode: '' };
   function loadVoices() {
     if (!('speechSynthesis' in window)) return [];
     try { voices = window.speechSynthesis.getVoices() || []; } catch (e) { voices = []; }
@@ -171,6 +172,7 @@
         u.onerror = function (ev) {
           var err = (ev && ev.error) || '';
           if (err === 'canceled' || err === 'interrupted') return; /* 我们自己 cancel 的，忽略 */
+          lastSpeak.err = err;
           if (speakWarned || quiet) return;
           speakWarned = true;
           toast(err === 'language-unavailable' || err === 'voice-unavailable'
@@ -178,22 +180,73 @@
             : '朗读失败（' + (err || '未知原因') + '），可能是系统静音或缺少语音包');
         };
         synth.speak(u);
-        /* 兜底：既没在念也没排队 → 大概率静音 / 无语音包，只提示一次 */
-        setTimeout(function () {
-          if (speakWarned || quiet) return;
-          if (!synth.speaking && !synth.pending && !synth.paused) {
-            speakWarned = true;
-            toast('没听到声音？检查手机侧边静音开关，或到「设置 → 发音」点试听换个语音');
-          }
-        }, 1000);
+        lastSpeak.lang = lang;
+        lastSpeak.err = '';
+        lastSpeak.mode = 'tts';
+        return u;
       } catch (e) {
+        lastSpeak.err = e.message || 'throw';
         if (!speakWarned && !quiet) { speakWarned = true; toast('朗读失败：' + e.message); }
+        return null;
       }
     }
+    function idle() { return !synth.speaking && !synth.pending && !synth.paused; }
     try { synth.cancel(); } catch (e) { /* ignore */ }
     try { if (synth.paused) synth.resume(); } catch (e) { /* ignore */ }
-    /* 部分 Android/Chrome 上 cancel() 后立刻 speak() 会被吞掉，隔一帧再放 */
-    setTimeout(run, 60);
+    /* 必须在本轮流同步调用：iOS 要求在用户手势的同一任务里 speak，setTimeout 会丢掉手势 */
+    run();
+    /* 安卓上 cancel() 刚结束就 speak() 偶尔被吞掉：没进入队列就重试一次 */
+    setTimeout(function () {
+      if (!idle()) return;
+      try { synth.cancel(); } catch (e) { /* ignore */ }
+      run();
+    }, 320);
+    /* 系统 TTS 没起来（没语音包 / 引擎缺失）→ 退回在线词典发音 */
+    setTimeout(function () {
+      if (!idle()) return;
+      playOnline(phrase, lang, quiet);
+    }, 700);
+    /* 兜底：1.8 秒后系统语音和在线发音都没成功 → 说明原因，只提示一次 */
+    setTimeout(function () {
+      if (speakWarned || quiet) return;
+      if (idle() && lastSpeak.mode !== 'online') {
+        speakWarned = true;
+        toast(voiceCount(lang) === 0
+          ? '这台手机没有 ' + lang + ' 语音包：装个「文字转语音」引擎，或连网用在线发音'
+          : '没听到声音？看看手机静音/媒体音量，或在「设置 → 发音」点试听');
+      }
+    }, 1800);
+  }
+  /* 在线发音兜底：英文用有道词典，中文用百度翻译 TTS。
+     界面里的字要先过一遍，注意这会把单词发到对方服务器。 */
+  function onlineUrl(text, lang) {
+    if (/[\u4e00-\u9fa5]/.test(text)) {
+      return 'https://fanyi.baidu.com/gettts?lan=zh&spd=3&source=web&text=' + encodeURIComponent(text);
+    }
+    var type = (lang === 'en-GB') ? 1 : 2;
+    return 'https://dict.youdao.com/dictvoice?type=' + type + '&audio=' + encodeURIComponent(text);
+  }
+  function playOnline(text, lang, quiet) {
+    var url = onlineUrl(text, lang);
+    lastSpeak.mode = 'online';
+    try {
+      var a = new Audio(url);
+      a.volume = 1;
+      var p = a.play();
+      if (p && p.catch) {
+        p.catch(function () {
+          lastSpeak.mode = 'failed';
+          if (!quiet && !speakWarned) {
+            speakWarned = true;
+            toast('系统语音和在线发音都没成功：先点一下页面再试，或检查网络');
+          }
+        });
+      }
+      return a;
+    } catch (e) {
+      lastSpeak.mode = 'failed';
+      return null;
+    }
   }
 
   /* ============================================================
@@ -601,10 +654,19 @@
     $('#setRate').addEventListener('change', function () { speak('Vocabulary'); });
     $('#btnTestSpeak').addEventListener('click', function () {
       speak('Vocabulary');
+      /* 900ms 后看真实状态：系统语音 / 在线发音 / 都没成功，直接写在设置页里 */
       setTimeout(function () {
         var n = voiceCount(Store.data.settings.accent);
-        $('#setVoiceInfo').textContent = n > 0 ? ('检测到 ' + n + ' 个可用语音') : '系统没提供语音包（安卓可在「设置→系统→语言与输入→文字转语音」里装）';
-      }, 400);
+        var s = window.speechSynthesis;
+        var txt;
+        if (lastSpeak.mode === 'tts' && s && (s.speaking || s.pending)) txt = '系统语音 · 正在朗读';
+        else if (lastSpeak.mode === 'tts') txt = '系统语音 · 已请求（没听到就调媒体音量）';
+        else if (lastSpeak.mode === 'online') txt = '系统语音不可用 · 改用在线发音';
+        else if (lastSpeak.mode === 'failed') txt = '系统语音与在线发音都失败 · 检查网络';
+        else txt = '语音 ' + n + ' 个 · 等待朗读';
+        if (lastSpeak.err) txt += ' · 错误 ' + lastSpeak.err;
+        $('#setVoiceInfo').textContent = txt;
+      }, 900);
     });
     $('#setTheme').addEventListener('change', function (e) {
       set('theme', e.target.value); applyTheme();
