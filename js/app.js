@@ -824,7 +824,7 @@
 
         /* 内置词库：一键填入，避免手机上还要传文件 */
         var banksEl = root.querySelector('#impBanks');
-        if (!isAppend && banksEl && window.BUNDLED_BANKS && window.BUNDLED_BANKS.length) {
+        if (banksEl && window.BUNDLED_BANKS && window.BUNDLED_BANKS.length) {
           banksEl.innerHTML = '<p class="hint-line" style="margin:0 0 8px">现成词库，点一下直接填入：</p>' +
             '<div class="bank-picks">' + window.BUNDLED_BANKS.map(function (bk, i) {
               return '<button class="chip" data-bank="' + i + '">' + esc(bk.name) +
